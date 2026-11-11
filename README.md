@@ -7,7 +7,7 @@ assumptions.
 | Folder | What it does | Needs |
 |---|---|---|
 | [ClassEstimationDBE](ClassEstimationDBE/) | Compound classes allowed by a neutral molecular formula (element counts + DBE) | standard library |
-| [SOAP](SOAP/) | SOA formation potential (SOM SOA mass yield) from structure (SMILES) or, as a range, from formula alone | standard library; RDKit for SMILES; pandas for tables |
+| [SOAP](SOAP/) | SOA formation potential (SOM SOA mass yield) for a list of formulas (central value ± range, with assumptions) or from structure (SMILES) | standard library; pandas for tables; RDKit for SMILES |
 
 The SOAP formula route builds on ClassEstimationDBE, so keep the two folders
 side by side.

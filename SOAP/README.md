@@ -3,19 +3,23 @@
 Assigns each organic species a **secondary organic aerosol formation potential
 (SOAFP)**. Here SOAFP is the **SOA mass yield** (g SOA per g precursor reacted)
 from Statistical Oxidation Model (SOM) box-model runs, looked up by compound
-class and carbon number (or oxygen number).
+class and carbon number (or oxygen number). The SOM parameters are fits to
+chamber experiments, so the tool adds no chemistry of its own: it only decides
+which SOM class a species belongs to, and reports how uncertain that choice is.
 
-There are two routes:
-
-| You know | Route | Result |
+| You know | Function | Result |
 |---|---|---|
-| the structure (SMILES) | `soafp_from_structure` | one SOM class → one value, plus its vapor-wall-loss (VWL) range |
-| only the molecular formula (e.g. PTR-ToF-MS, CIMS) | `soafp_range_from_formula` | DBE → every class the formula allows → a min–max range |
+| a list of molecular formulas (e.g. PTR-ToF-MS, CIMS peak list) | `soafp_from_formulas` | per formula: central value, low–high range, number of candidate classes, assumptions |
+| one formula | `soafp_range_from_formula` | the same, as a dict |
+| the structure (SMILES) | `soafp_from_structure` | one SOM class → one value, with its vapor-wall-loss (VWL) range |
+
+Like a log C* estimate from a formula, every value comes with an uncertainty
+and a list of the assumptions behind it.
 
 The module needs **no spreadsheet**: the yield tables are plain CSV in
-`soafp/data/`. The structure route needs [RDKit](https://www.rdkit.org/)
-(`pip install rdkit`). The formula route needs only the standard library and
-`ClassEstimationDBE` from this repository.
+`soafp/data/`. The formula route needs only the standard library (pandas for
+`soafp_from_formulas`) and `ClassEstimationDBE` from this repository. The
+structure route needs [RDKit](https://www.rdkit.org/) (`pip install rdkit`).
 
 ---
 
@@ -26,23 +30,25 @@ import sys
 sys.path.insert(0, r"<path to Tool-Chains>/SOAP")
 import soafp
 
+soafp.soafp_from_formulas(["C10H16", "C10H18", "C7H8O", "C8H16O2"])
+#  formula  soafp_column                       soafp_central  soafp_low  soafp_high  n_candidates
+#  C10H16   Cycloalkene                               0.1323     0.0930      0.1716             1
+#  C10H18   Alkenes; Cycloalkene; Cycloalkane         0.1399     0.0512      0.3304             3
+#  C7H8O    O1; Aromatic                              0.0453     0.0001      0.1122             2
+#  C8H16O2  O2                                        0.0058     0.0012      0.0104             1
+#  (plus soafp_minus, soafp_plus, dbe, n_C, n_O, soafp_flags, ...)
+
 r = soafp.soafp_from_structure("CC1=CC=CC=C1")       # toluene
-r["column"], r["soafp_avg"], r["soafp_low"], r["soafp_high"]
+r["column"], r["soafp_central"], r["soafp_low"], r["soafp_high"]
 # ('Aromatic', 0.0896, 0.0670, 0.1122)
 
-r = soafp.soafp_range_from_formula("C10H18")
-r["column"], r["soafp_avg_low"], r["soafp_avg_high"]
-# ('Alkenes; Cycloalkene; Cycloalkane', 0.0867, 0.2005)
-
-import pandas as pd
-out = soafp.soafp_table(df, smiles="SMILES", formula="Formula")   # whole table
+out = soafp.soafp_table(df, smiles="SMILES", formula="Formula")   # whole pandas table
 ```
 
-To run the four source profiles (gasoline, diesel, VCP, cooking):
-
 ```
-python run_profiles.py            # -> results/<profile>_soafp.csv, results/<profile>_input_issues.csv
-python -m pytest tests            # 31 tests
+python run_profiles.py            # the four source profiles -> results/<profile>_soafp.csv
+python validate_formula_route.py  # formula route vs known structures -> results/formula_validation.csv
+python -m pytest tests            # 35 tests
 ```
 
 ## 2. Files
@@ -52,12 +58,14 @@ python -m pytest tests            # 31 tests
 | `soafp/yields.py` | reads the yield tables, `mass_yield(column, n_C)` |
 | `soafp/classify.py` | structure → class (RDKit); formula → candidate classes (DBE). **All assumptions are constants here.** |
 | `soafp/core.py` | `soafp_from_structure`, `soafp_range_from_formula`, `soafp_from_class` |
-| `soafp/table.py` | `soafp_one`, `soafp_table` (pandas) |
+| `soafp/table.py` | `soafp_from_formulas`, `soafp_one`, `soafp_table` (pandas) |
 | `soafp/data/som_mass_yield_noVWL.csv`, `..._VWL.csv` | SOM mass yields, C5–C30 × 12 columns, with provenance header |
 | `profiles/*.csv` | the four speciation profiles (exported from `legacy/Tables for SOAFP calculation.xlsx`) |
-| `run_profiles.py` | SOAFP for the four profiles, with the formula-only range alongside |
+| `run_profiles.py` | SOAFP for the four profiles, with the formula-only value alongside |
+| `validate_formula_route.py` | tests the formula route on the ~900 profile species of known structure (§7) |
 | `tests/test_soafp.py` | tests |
-| `legacy/` | the original scripts and workbooks by Yi Wu (they still run, see §8) |
+| `LITERATURE_REVIEW.md` | provenance of the yield tables and background on the method |
+| `legacy/` | the original scripts and workbooks by Yi Wu (they still run, see §10) |
 
 ## 3. The yield tables
 
@@ -96,7 +104,46 @@ family of yields is used by McDonald et al. (2018, Table S12) for VCPs. See
 
 ## 4. Method
 
-### 4.1 Structure route (SMILES → one class)
+### 4.1 Formula route (formula → DBE → candidate classes → value ± range)
+
+`ClassEstimationDBE` computes the double-bond equivalent,
+DBE = C − H/2 + N/2 + 1 (halogens count as H), and the SOM classes the formula
+allows:
+
+| Formula | Condition | Candidate SOM columns |
+|---|---|---|
+| CₙH₂ₙ₊₂ | DBE 0 | n-Alkane, b-Alkane |
+| CₙH₂ₙ | DBE 1 | Alkenes, Cycloalkane |
+| CₙH₂ₙ₋₂ | DBE 2 | Alkenes, Cycloalkene, Cycloalkane (bicyclic) |
+| CₙH₂ₙ₋₄ | DBE 3 | Alkenes, Cycloalkene |
+| CₓHᵧ | DBE ≥ 4, ≥ 6 C | Aromatic; PAH if DBE ≥ 7 and ≥ 10 C |
+| C10H16 | terpene | Cycloalkene (α-pinene) |
+| C15H24, C20H32 | terpene or alkylbenzene | Cycloalkene, Aromatic |
+| CₓHᵧOz | DBE < 4 or < 6 C | `O<n_O>` (aliphatic oxygenate) |
+| CₓHᵧOz | DBE ≥ 4, ≥ 6 C | `O<n_O>` and Aromatic (aromatic oxygenate: phenols, benzaldehyde, benzyl alcohol…) |
+| with F, Cl, Br, I | | 0, and the candidates of the formula with each halogen replaced by H |
+| with N, S, P, Si | | 0, and `O<n>` with n = n_O + n_N + n_S + n_P (each heteroatom one O-bearing group; at least 1) |
+| < 5 C | | 0 (below the SOM table) |
+| > 30 C | | the C30 value |
+| unreadable formula | | no value, flagged (never a silent 0) |
+
+From the candidates:
+
+- **`soafp_central`** = mean over the candidates of the `avg` yield (mean of
+  no-VWL and VWL). Equal weights by default: the formula alone says nothing
+  about which isomer it is. If a project knows more (e.g. from an emission
+  inventory), pass `weights={"b-Alkane": 3, "n-Alkane": 1}`; labels not
+  given keep weight 1. The arithmetic mean is used so that weight-fraction
+  sums over many species stay unbiased.
+- **`soafp_low`, `soafp_high`** = min and max over the candidates **and**
+  both VWL cases. The range therefore combines the two uncertainties the SOM
+  table carries: which class (structure), and the chamber wall loss.
+- **`soafp_minus`, `soafp_plus`** = central − low and high − central, for
+  reporting as central (−minus / +plus).
+- **`n_candidates`** = how many classes the formula allows. With 1 the range is
+  the wall-loss range alone.
+
+### 4.2 Structure route (SMILES → one class)
 
 The SMILES is parsed with RDKit, so aromatic (`c1ccccc1`), Kekulé and stereo
 SMILES all work. For C/H-only species the rules are applied in this order:
@@ -113,50 +160,32 @@ SMILES all work. For C/H-only species the rules are applied in this order:
 | otherwise | `n-Alkane` |
 
 Species with oxygen use the `O<n_O>` column at their carbon number,
-independent of the carbon skeleton. Species with N, S, P, Si or halogens follow
-`HETEROATOM_POLICY` (see §5).
+independent of the carbon skeleton. Species with N, S, P or Si and at least one
+O are treated as oxygenates; halocarbons and heteroatom species without O get 0
+(`HETEROATOM_POLICY`). `soafp_central` equals `soafp_avg`; the range is the
+wall-loss range.
 
 A formula given together with the SMILES is only checked against it: a
 mismatch is flagged and the structure is used. Given `n_C` / `n_O` values
-override the structure (for lumped species, see §7).
-
-### 4.2 Formula route (formula → candidate classes → range)
-
-`ClassEstimationDBE` computes the DBE and lists every class the formula
-allows:
-
-| C/H formula | DBE | Candidates |
-|---|---|---|
-| CₙH₂ₙ₊₂ | 0 | n-Alkane, b-Alkane |
-| CₙH₂ₙ | 1 | Alkenes, Cycloalkane |
-| CₙH₂ₙ₋₂ | 2 | Alkenes, Cycloalkene, Cycloalkane (bicyclic) |
-| CₙH₂ₙ₋₄ | 3 | Alkenes, Cycloalkene |
-| ≥ 6 C | ≥ 4 | Aromatic; PAH if DBE ≥ 7 and ≥ 10 C |
-| C10H16 | 3 | Cycloalkene (terpene) |
-| C15H24, C20H32 | 4–5 | Cycloalkene (terpene), Aromatic (alkylbenzenes) |
-| with O | any | `O<n_O>`: a single value, because the O-number columns ignore structure |
-
-The range is reported two ways:
-- `soafp_avg_low` – `soafp_avg_high`: over the candidates, using the `avg` table;
-- `soafp_low` – `soafp_high`: over the candidates **and** both VWL cases.
-
-The candidates are never averaged, because the formula carries no information
-on which one applies.
+override the structure (for lumped species, see §9).
 
 ## 5. Assumptions (all in `soafp/classify.py` and `soafp/yields.py`)
 
-| # | Assumption | Default | Why / alternative |
+| # | Assumption | Setting | Why / alternative |
 |---|---|---|---|
-| A1 | SOAFP = SOM mass yield at the (undocumented) box-model conditions | — | not reactivity- or exposure-weighted; see LITERATURE_REVIEW.md |
-| A2 | central value = mean of no-VWL and VWL | `avg` | the two cases are reported as the bounds |
-| A3 | n_C < 5 → 0 | | the SOM tables start at C5 |
-| A4 | n_C > 30 → C30 value | | yields plateau above about C23. The legacy scripts gave 0. |
-| A5 | oxygenates: `O<min(n_O,5)>` column, regardless of structure | | aromatic or alkene oxygenates (phenols, aldehydes…) get the alkane-based value |
-| A6 | terpenes → `Cycloalkene` (α-pinene) | `TERPENE_COLUMN` | applies to sesquiterpenes too, scaled only by carbon number |
-| A7 | species with N, S, P, Si or halogens: with O they are treated as oxygenates (e.g. siloxanes → `O5`); without O they get 0 | `HETEROATOM_POLICY = "oxygen_column"` | `"zero"` gives them all 0 |
-| A8 | one aromatic ring = `Aromatic`; only ≥ 2 aromatic rings = `PAH` | | the legacy SMILES rules put indane, indene and tetralin in PAH, which is about ×2 higher at C9–C10 |
-| A9 | alkynes → as alkenes | | flagged; mostly < C5 anyway |
-| A10 | formula route: DBE ≥ 4 with ≥ 6 C is aromatic | `ce.PAH_MIN_DBE`, `PAH_MIN_C` | non-aromatic polyenes or polycyclics at DBE ≥ 4 are not considered |
+| A1 | SOAFP = SOM mass yield at the (undocumented) box-model conditions | — | per mass reacted; not reactivity- or exposure-weighted |
+| A2 | central value = mean of no-VWL and VWL; the two runs are the bounds | `avg` | |
+| A3 | n_C < 5 → 0 | `MIN_C` | the SOM tables start at C5 |
+| A4 | n_C > 30 → C30 value | `MAX_C` | yields plateau above about C23. The legacy scripts gave 0. |
+| A5 | oxygenates use the `O<min(n_O,5)>` column (alkane surrogate) | | the only oxygenate fits in the table |
+| A6 | formula route: CHO with DBE ≥ 4 and ≥ 6 C may also be aromatic → Aromatic column as a second candidate | `OXY_AROMATIC_MIN_C`, `OXY_AROMATIC_MIN_DBE` | the O-columns are far below measured yields of aromatic oxygenates; the Aromatic column of the same C bounds them from above |
+| A7 | terpenes → `Cycloalkene` (α-pinene) | `TERPENE_COLUMN` | applies to sesquiterpenes too, scaled only by carbon number |
+| A8 | formula route, halogens: 0 to the H-substituted analogue | `HALOGENS` | no SOM fit for halocarbons |
+| A9 | formula route, N/S/P/Si: 0 to an oxygenate with each N, S, P as one O-group | `GROUP_ATOMS` | no SOM fit; amines, nitro, thio… groups taken as comparable to one oxygenated group |
+| A10 | structure route, N/S/P/Si with O: as an oxygenate (siloxanes → `O5`); without O, and halocarbons: 0 | `HETEROATOM_POLICY = "oxygen_column"` | `"zero"` gives them all 0 |
+| A11 | one aromatic ring = `Aromatic`; only ≥ 2 aromatic rings = `PAH` | | the legacy SMILES rules put indane, indene and tetralin in PAH, which is about ×2 higher at C9–C10 |
+| A12 | alkynes → as alkenes | | flagged; mostly < C5 anyway |
+| A13 | formula route: candidates equally likely | `weights=None` | pass `weights` when the isomer mix is known |
 
 Every assumption that applies to a species is written to its `soafp_flags`.
 
@@ -164,16 +193,73 @@ Every assumption that applies to a species is written to its `soafp_flags`.
 
 | Column | Meaning |
 |---|---|
-| `soafp_method` | `structure`, `class` (set by hand), `formula`, or `none` |
-| `soafp_column` | SOM column(s) used; `; `-separated when there are several candidates |
+| `soafp_method` | `formula`, `structure`, `class` (set by hand), or `none` (no usable input) |
+| `soafp_column` | SOM column(s) of the candidates, `; `-separated; `none` = a candidate with SOAFP 0 |
 | `n_C`, `n_O`, `dbe` | composition used for the lookup |
-| `soafp_noVWL`, `soafp_VWL`, `soafp_avg` | single-class values (empty for ambiguous formulas) |
-| `soafp_avg_low`, `soafp_avg_high` | range of `soafp_avg` over the candidates |
+| `soafp_central` | best estimate (§4.1) |
 | `soafp_low`, `soafp_high` | range over the candidates and both VWL cases |
+| `soafp_minus`, `soafp_plus` | central − low, high − central |
+| `n_candidates` | number of candidate classes |
+| `soafp_noVWL`, `soafp_VWL`, `soafp_avg` | single-class values (empty when there are several candidates) |
+| `soafp_avg_low`, `soafp_avg_high` | range of `avg` over the candidates (wall loss averaged out) |
 | `soafp_flags` | every assumption or problem, `; `-separated |
-| `formula_*` (run_profiles only) | the same, computed from the formula alone |
+| `formula_*` (run_profiles only) | central, low, high, candidates from the formula alone |
 
-## 7. The four profiles (`run_profiles.py`)
+## 7. How good is the formula route? (`validate_formula_route.py`)
+
+The 903 profile species with a readable SMILES were run twice: through the
+structure route (reference) and through the formula route, with the formula
+taken from the SMILES.
+
+| Set | Species | Reference in [low, high] | Central within ×2 of reference | Median central / reference | Weighted reference | Weighted formula central |
+|---|---|---|---|---|---|---|
+| gasoline | 137 | 100 % | 83 % | 1.34 | 0.0283 | 0.0296 |
+| diesel | 217 | 100 % | 95 % | 1.02 | 0.2136 | 0.2350 |
+| VCP | 512 | 100 % | 91 % | 1.00 | 0.0328 | 0.0342 |
+| cooking | 37 | 100 % | 93 % | 1.00 | 0.0010 | 0.0023 |
+| all | 903 | 100 % | 91 % | 1.00 | | |
+
+Weighted = Σ(wt % × SOAFP)/Σ wt % over these species (the diesel lumps are
+evaluated at their SMILES here, not at their given carbon numbers).
+
+Reading the table:
+- The range always contains the structure-based value. This is by
+  construction: the structure's class is always one of the formula's
+  candidates. The check confirms that the DBE rules and the structure rules
+  agree.
+- For 91 % of species the central value is within ×2. The 70 misses are
+  branched alkanes (42; the n-Alkane candidate is higher, median ratio 1.34)
+  and aromatic oxygenates such as benzaldehydes (28), where the formula route
+  is higher than the structure route by design (A6). Cycloalkanes are biased
+  high too (median 1.6×, from the Alkenes / Cycloalkene candidates at DBE 1–2)
+  but stay within ×2.
+- On profile totals the formula route is 2–10 % high for gasoline, diesel and
+  VCP. Cooking is ×2 high, from its oxygenated aromatics.
+
+## 8. Limitations
+
+- **Per mass reacted, at fixed conditions.** The yields are for the SOM run
+  conditions (OH exposure, OA loading, NOx, temperature; see §3), not per mass
+  emitted. To get SOA from emissions, multiply by the fraction reacted.
+- **The range is not a confidence interval.** It is min–max over the classes
+  the formula allows and over the two wall-loss fits. It covers the true value
+  only if the species really belongs to one of the candidate classes, and only
+  as far as SOM reproduces the chamber data for that class.
+- **Oxygenates rest on an alkane surrogate.** The O-columns are fits for
+  oxygenated alkanes and ignore structure. Aromatic oxygenates get the Aromatic
+  column as an upper candidate (A6); furans, oxygenated terpenoids
+  (C10H16O, C10H18O…) and unsaturated aliphatic oxygenates do not, and are
+  likely underestimated.
+- **No SOM fits exist for N-, S-, Si- or halogen-containing species.** Their
+  ranges (A8–A10) are placeholders that start at 0.
+- **Each class has one surrogate**, scaled only by carbon number: all PAHs are
+  naphthalene-like, all terpenes α-pinene-like, all alkenes isoprene-like.
+- **Equal candidate weights** (A13): a formula shared by a common and a rare
+  isomer is still split evenly unless weights are supplied.
+- **Lumped or placeholder species** (UCM, "C18 aromatics") carry the carbon
+  number of their placeholder formula unless the true one is supplied.
+
+## 9. The four profiles (`run_profiles.py`)
 
 **Given carbon and oxygen numbers.** The diesel and VCP tables carry per-row
 carbon and oxygen numbers (`n_C`/`n_O`, `No. C`/`No. O`). They are handled
@@ -190,45 +276,43 @@ matching "branched alkane", "cycloalkane" or "cycloalkene" set the class by
 hand (`NAME_HINTS`), as the legacy scripts did. Every such row is listed in
 `results/<profile>_input_issues.csv` for review.
 
-**Weighted mean SOAFP, Σ(wt % × SOAFP)/Σ wt %:**
+**Weighted mean SOAFP, Σ(wt % × SOAFP)/Σ wt %** (VCP: total column `wt %.6`;
+cooking: PMF mass fraction; species without SMILES use the formula route):
 
-| Profile | Species changed | Rows to review | Legacy | This module (avg) | VWL range | Formula only, avg | Formula only, incl. VWL |
-|---|---|---|---|---|---|---|---|
-| gasoline | 5/137 | 2 | 0.0284 | 0.0283 | 0.0220–0.0345 | 0.0280–0.0309 | 0.0190–0.0414 |
-| diesel | 20/217 | 98 | 0.2270 | **0.3592** | 0.3163–0.4020 | 0.2089–0.2604 | 0.1640–0.3462 |
-| VCP | 35/512 | 31 | 0.0379 | **0.0332** | 0.0222–0.0442 | 0.0310–0.0386 | 0.0196–0.0550 |
-| cooking | 1/46 | 11 | 0.0029 | 0.0029 | 0.0014–0.0044 | 0.0029 | 0.0014–0.0044 |
+| Profile | Legacy | This module, central | VWL range | Formula only, central | Formula only, range |
+|---|---|---|---|---|---|
+| gasoline | 0.0284 | 0.0283 | 0.0220–0.0345 | 0.0295 | 0.0190–0.0416 |
+| diesel | 0.2270 | **0.3592** | 0.3163–0.4020 | 0.2350 | 0.1640–0.3471 |
+| VCP | 0.0379 | **0.0332** | 0.0222–0.0442 | 0.0342 | 0.0169–0.0598 |
+| cooking | 0.0029 | 0.0033 | 0.0014–0.0053 | 0.0044 | 0.0014–0.0082 |
 
 **Two rows dominate the differences:**
 - **diesel "UCM"** (11.9 wt %): the legacy script parsed the placeholder
   formula C12H26 and got 0.069. The table's `n_C` = 26 gives 1.05, which
   explains almost all of the diesel increase. *Please confirm that 26 is meant.*
+  The formula-only column cannot reach this value, because the placeholder
+  formulas carry the wrong carbon numbers.
 - **VCP "Witch hazel"** (0.54 wt %): `No. C` = 20 and `No. O` = 14 in the
   table, but the SMILES and formula are decane. Legacy took C20 (0.66); this
   module takes decane (0.033). Neither is a good representation of a plant
   extract.
 
-The other changes across the profiles:
-- indane, indene and tetralin → Aromatic (A8);
-- terpenes → Cycloalkene (limonene, pinene, pine oil and turpentine were
-  Aromatic or PAH before);
-- the diesel "Aromatic" and "Polycyclic Aromatic" lumps now use their given
-  carbon numbers;
-- some rows where the SMILES, the formula or the given numbers disagree.
-
-The formula-only range does not reach the diesel value, because the lumps'
-placeholder formulas carry the wrong carbon numbers.
+Other changes against legacy: indane, indene and tetralin → Aromatic (A11);
+terpenes → Cycloalkene (limonene, pinene, pine oil and turpentine were
+Aromatic or PAH before); the diesel "Aromatic" and "Polycyclic Aromatic" lumps
+use their given carbon numbers; cooking species without SMILES now get the
+formula central value instead of 0.
 
 **Input rows to check** (all are in `results/*_input_issues.csv`):
 - gasoline "napthalene": formula C10H8, but the SMILES is methylnaphthalene,
   which is used;
 - cooking undecanal/undecenal: the formulas and SMILES are swapped or wrong;
-- cooking: eight species have no SMILES (`---`), so the formula range is used;
+- cooking: eight species have no SMILES (`---`), so the formula route is used;
 - VCP: Witch hazel (above); Texanol `No. O` is 4 for a molecule with 3 O;
   "C9 cycloalkanes" and "Cis-bicyclo[4.3.0]nonane" carry the SMILES of other
   compounds; siloxane lumps have inconsistent `No. C`.
 
-## 8. Legacy scripts
+## 10. Legacy scripts
 
 `legacy/` holds the original per-source scripts (`SOAFP_calculation_*.py`) and
 both workbooks unchanged. The only edit is to the file names in the scripts,
@@ -242,14 +326,13 @@ which now match the uploaded workbooks. Run them from that folder; they write
   terpene flag);
 - give 0 above C30.
 
-## 9. Open items
+## 11. Open items
 
 1. Document the box-model conditions (OH exposure, OA loading, NOx, T) and the
    VWL rate. Confirm the b-Alkane and Cycloalkane surrogates.
-2. Confirm the diesel UCM carbon number and fix the input rows listed in §7.
+2. Confirm the diesel UCM carbon number and fix the input rows listed in §9.
    Better still, give lumped species an explicit class and carbon number
    instead of a placeholder SMILES.
-3. Possible method upgrades are ranked in `LITERATURE_REVIEW.md`.
 
 ## References
 

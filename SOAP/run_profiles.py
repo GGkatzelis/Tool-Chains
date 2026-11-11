@@ -77,8 +77,8 @@ def run(profile):
                 (f + "; " if f else "") + f"table '{given}' = {int(v)} differs, not used"
                 for f, v in zip(out.loc[bad, "soafp_flags"], g[bad])]
     by_formula = soafp.soafp_table(df[[formula_col]], formula=formula_col, route="formula")
-    for col in ("soafp_column", "soafp_avg_low", "soafp_avg_high",
-                "soafp_low", "soafp_high", "soafp_flags"):
+    for col in ("soafp_column", "soafp_central", "soafp_low", "soafp_high",
+                "n_candidates", "soafp_flags"):
         out["formula_" + col.replace("soafp_", "", 1)] = by_formula[col].values
     (HERE / "results").mkdir(exist_ok=True)
     path = HERE / "results" / f"{profile}_soafp.csv"

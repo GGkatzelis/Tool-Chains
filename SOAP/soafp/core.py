@@ -7,10 +7,16 @@ structure, class-override and formula routes stack into one table:
 
     method          'structure' | 'class' | 'formula'
     column          SOM column(s) used, '; '-joined when the formula is ambiguous
+                    ('none' marks a candidate with SOAFP 0)
     n_C, n_O, dbe   composition used for the lookup
-    soafp_avg       mean of the no-VWL and VWL yields (single-column routes only)
-    soafp_avg_low / soafp_avg_high   min / max of soafp_avg over the candidates
-    soafp_low / soafp_high           min / max over candidates and both VWL cases
+    soafp_central   best estimate: mean over the candidates (equal weights unless
+                    weights are given) of the mean of the no-VWL and VWL yields
+    soafp_low / soafp_high    min / max over the candidates and both VWL cases
+    soafp_minus / soafp_plus  soafp_central - soafp_low, soafp_high - soafp_central
+    n_candidates    number of candidate classes (1 = structure known or unambiguous)
+    soafp_noVWL, soafp_VWL, soafp_avg   single-candidate values (None if ambiguous)
+    soafp_avg_low / soafp_avg_high      min / max of soafp_avg over the candidates
+    candidates      {label: {'noVWL', 'VWL', 'avg'}}
     flags           list of every assumption or problem met on the way
 """
 from . import classify
@@ -18,32 +24,60 @@ from .yields import CASES, OXYGEN_COLUMNS, mass_yield, oxygen_column
 
 import class_estimation as ce   # made importable by classify
 
+_ZERO = {"noVWL": 0.0, "VWL": 0.0, "avg": 0.0}
 
-def _result(method, candidates, c, dbe, flags):
-    """Look up every (label, column) candidate and build the common result dict."""
+
+def _result(method, candidates, c, dbe, flags, weights=None):
+    """
+    Look up every (label, column) candidate and build the common result dict.
+    A column of None is a candidate with SOAFP 0. `weights` maps candidate
+    labels (or column names) to relative weights for soafp_central; labels
+    not in it get weight 1.
+    """
     n_C, n_O = c.get("C", 0), c.get("O", 0)
     out = {"method": method, "column": None, "n_C": n_C, "n_O": n_O, "dbe": dbe,
+           "soafp_central": 0.0, "soafp_low": 0.0, "soafp_high": 0.0,
+           "soafp_minus": 0.0, "soafp_plus": 0.0, "n_candidates": len(candidates),
            "soafp_noVWL": 0.0, "soafp_VWL": 0.0, "soafp_avg": 0.0,
            "soafp_avg_low": 0.0, "soafp_avg_high": 0.0,
-           "soafp_low": 0.0, "soafp_high": 0.0, "candidates": {}, "flags": list(flags)}
+           "candidates": {}, "flags": list(flags)}
     if not candidates:
         return out
+    w = []
     for label, column in candidates:
-        values, more = mass_yield(column, n_C)
+        values, more = (dict(_ZERO), []) if column is None else mass_yield(column, n_C)
         out["candidates"][label] = values
         out["flags"] += [f for f in more if f not in out["flags"]]
+        w.append(_weight(weights, label, column))
     vals = list(out["candidates"].values())
-    out["column"] = "; ".join(column for _, column in candidates)
+    if sum(w) <= 0:
+        raise ValueError("candidate weights must sum to a positive number")
+    if weights and len(vals) > 1:
+        out["flags"].append("candidates weighted: " + ", ".join(
+            f"{label} {wi / sum(w):.2f}" for (label, _), wi in zip(candidates, w)))
+    out["column"] = "; ".join(column or "none" for _, column in candidates)
+    out["soafp_central"] = sum(wi * v["avg"] for wi, v in zip(w, vals)) / sum(w)
     out["soafp_avg_low"] = min(v["avg"] for v in vals)
     out["soafp_avg_high"] = max(v["avg"] for v in vals)
     out["soafp_low"] = min(v[case] for v in vals for case in CASES)
     out["soafp_high"] = max(v[case] for v in vals for case in CASES)
+    out["soafp_minus"] = out["soafp_central"] - out["soafp_low"]
+    out["soafp_plus"] = out["soafp_high"] - out["soafp_central"]
     if len(vals) == 1:
         out["soafp_noVWL"], out["soafp_VWL"], out["soafp_avg"] = (
             vals[0]["noVWL"], vals[0]["VWL"], vals[0]["avg"])
     else:
         out["soafp_noVWL"] = out["soafp_VWL"] = out["soafp_avg"] = None
     return out
+
+
+def _weight(weights, label, column):
+    if not weights:
+        return 1.0
+    for key in (label, column or "none"):
+        if key in weights:
+            return float(weights[key])
+    return 1.0
 
 
 def soafp_from_structure(smiles, formula=None, n_C=None, n_O=None):
@@ -94,15 +128,16 @@ def soafp_from_class(column, n_C, n_O=0):
                    [f"class set by user: {column}"])
 
 
-def soafp_range_from_formula(formula):
+def soafp_range_from_formula(formula, weights=None):
     """
-    SOAFP range from a neutral molecular formula alone: every SOM column the
-    formula allows, with soafp_low/high spanning candidates and VWL cases.
+    SOAFP from a neutral molecular formula alone. Every SOM class the formula
+    allows (via DBE) is a candidate; soafp_central is their mean (equal
+    weights, or `weights` = {label or column: weight}, e.g.
+    {"b-Alkane": 3, "n-Alkane": 1}); soafp_low / soafp_high span the
+    candidates and both VWL cases.
     """
     candidates, c, dbe, flags = classify.columns_from_formula(str(formula).strip())
-    return _result("formula", candidates, c, dbe, flags)
+    return _result("formula", candidates, c, dbe, flags, weights)
 
 
-def _formula(c):
-    order = ["C", "H"] + sorted(e for e in c if e not in ("C", "H"))
-    return "".join(f"{e}{c[e] if c[e] != 1 else ''}" for e in order if c.get(e))
+_formula = classify._formula

@@ -128,9 +128,54 @@ def test_terpene_formulas():
 
 
 def test_formula_heteroatom_and_small():
-    assert soafp.soafp_range_from_formula("C6H5Cl")["soafp_high"] == 0.0
-    assert soafp.soafp_range_from_formula("C3H6O")["soafp_high"] == 0.0
-    assert soafp.soafp_range_from_formula("C8H16O")["column"] == "O1"
+    assert soafp.soafp_range_from_formula("C3H6O")["soafp_high"] == 0.0     # < C5
+    r = soafp.soafp_range_from_formula("C8H16O")                            # DBE 1
+    assert r["column"] == "O1" and r["n_candidates"] == 1
+    # halocarbon: from 0 to the H-substituted analogue (benzene)
+    r = soafp.soafp_range_from_formula("C6H5Cl")
+    assert r["column"] == "none; Aromatic" and r["soafp_low"] == 0.0
+    assert r["soafp_high"] == soafp.soafp_range_from_formula("C6H6")["soafp_high"]
+    # N / S / Si: from 0 to an oxygenate with the heteroatoms as O-groups
+    assert soafp.soafp_range_from_formula("C10H21NO")["column"] == "none; O2"
+    assert soafp.soafp_range_from_formula("C10H30O5Si5")["column"] == "none; O5"
+
+
+def test_oxygenated_aromatic_formula():
+    r = soafp.soafp_range_from_formula("C7H8O")       # cresols, benzyl alcohol, anisole
+    assert r["column"] == "O1; Aromatic"
+    o1 = soafp.mass_yield("O1", 7)[0]["avg"]
+    ar = soafp.mass_yield("Aromatic", 7)[0]["avg"]
+    assert r["soafp_central"] == pytest.approx((o1 + ar) / 2)
+    assert soafp.soafp_range_from_formula("C7H14O")["column"] == "O1"   # DBE 1: aliphatic
+
+
+def test_central_and_uncertainty():
+    r = soafp.soafp_range_from_formula("C10H22")
+    a = soafp.mass_yield("n-Alkane", 10)[0]["avg"]
+    b = soafp.mass_yield("b-Alkane", 10)[0]["avg"]
+    assert r["soafp_central"] == pytest.approx((a + b) / 2)
+    assert r["soafp_low"] <= r["soafp_central"] <= r["soafp_high"]
+    assert r["soafp_minus"] == pytest.approx(r["soafp_central"] - r["soafp_low"])
+    assert r["soafp_plus"] == pytest.approx(r["soafp_high"] - r["soafp_central"])
+    s = soafp.soafp_from_structure("CC1=CC=CC=C1")
+    assert s["soafp_central"] == s["soafp_avg"] and s["n_candidates"] == 1
+
+
+def test_weights():
+    w = soafp.soafp_range_from_formula("C10H22", weights={"b-Alkane": 3})
+    b = soafp.mass_yield("b-Alkane", 10)[0]["avg"]
+    a = soafp.mass_yield("n-Alkane", 10)[0]["avg"]
+    assert w["soafp_central"] == pytest.approx((a + 3 * b) / 4)
+    assert any("weighted" in f for f in w["flags"])
+
+
+def test_soafp_from_formulas():
+    pytest.importorskip("pandas")
+    out = soafp.soafp_from_formulas(["C10H16", "C7H8O", "not a formula", None])
+    assert list(out["formula"])[:2] == ["C10H16", "C7H8O"]
+    assert out.loc[0, "soafp_central"] > 0 and out.loc[1, "n_candidates"] == 2
+    assert out.loc[2, "soafp_method"] == "none" and out["soafp_central"].isna()[2]
+    assert "not calculated" in out.loc[3, "soafp_flags"]
 
 
 # --- table helper ---------------------------------------------------------

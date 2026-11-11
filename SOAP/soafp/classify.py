@@ -128,11 +128,20 @@ def column_from_smiles(smiles):
 
 
 # --- formula route ------------------------------------------------------
+#
+# Assumptions of the formula route (see SOAP/README.md, section 5):
+OXY_AROMATIC_MIN_C = 6     # CHO formulas with >= 6 C and DBE >= 4 may be
+OXY_AROMATIC_MIN_DBE = 4   # aromatic oxygenates: Aromatic column as an upper candidate
+HALOGENS = ("F", "Cl", "Br", "I")
+GROUP_ATOMS = ("N", "S", "P")   # each counted as one O-bearing functional group
+NO_SOA = None                   # candidate column meaning "SOAFP 0"
+
 
 def columns_from_formula(formula):
     """
     ([(label, column), ...], counts, dbe, flags) for a neutral formula: every
-    SOM column the formula allows. An empty list means SOAFP 0.
+    SOM column the formula allows. A column of None (NO_SOA) is a candidate
+    with SOAFP 0. An empty list means SOAFP 0 with no alternative.
     """
     if not ce.is_formula(formula):
         raise ValueError(f"{formula!r} is not a neutral formula of known elements")
@@ -142,16 +151,49 @@ def columns_from_formula(formula):
     if c.get("C", 0) == 0:
         flags.append("no carbon: SOAFP set to 0")
         return [], c, d, flags
-    if not ce.is_hydrocarbon(c):
-        column = _heteroatom_column(c, flags)
-        return ([(column, column)] if column else []), c, d, flags
-    candidates = [(cls, cls) for cls in ce.reference_classes(c)]
-    if ce.is_terpene_formula(c):
-        flags.append(f"terpene formula: {TERPENE_COLUMN} (alpha-pinene) surrogate (assumption)")
-        candidates.insert(0, ("terpene", TERPENE_COLUMN))
+    candidates = _formula_candidates(c, flags)
     if not candidates:
-        flags.append(f"DBE={d}: no hydrocarbon class fits, SOAFP set to 0")
+        flags.append(f"DBE={d}: no class fits, SOAFP set to 0")
     elif len(candidates) > 1:
         flags.append("formula is ambiguous: range over "
                      + ", ".join(label for label, _ in candidates))
     return candidates, c, d, flags
+
+
+def _formula_candidates(c, flags):
+    """Candidate (label, column) pairs for a composition with >= 1 C."""
+    halogens = sum(c.get(e, 0) for e in HALOGENS)
+    if halogens:
+        # no SOM fit for halocarbons: from 0 up to the H-substituted analogue
+        analogue = {e: n for e, n in c.items() if e not in HALOGENS}
+        analogue["H"] = analogue.get("H", 0) + halogens
+        flags.append(f"halogenated: range from 0 to the analogue with halogens "
+                     f"replaced by H ({_formula(analogue)}) (assumption)")
+        return [("no SOA", NO_SOA)] + [(f"{label} analogue", col) for label, col
+                                       in _formula_candidates(analogue, flags)]
+    groups = sum(c.get(e, 0) for e in GROUP_ATOMS)
+    if groups or c.get("Si", 0):
+        n_eff = max(c.get("O", 0) + groups, 1)
+        tag = "+".join(e for e in GROUP_ATOMS + ("Si",) if c.get(e, 0))
+        flags.append(f"contains {tag}: range from 0 to an oxygenate with {n_eff} "
+                     "O-equivalent groups (N, S, P count as one group each) (assumption)")
+        return [("no SOA", NO_SOA), (f"O{min(n_eff, 5)}-equivalent", oxygen_column(n_eff))]
+    if c.get("O", 0):
+        candidates = [("aliphatic oxygenate", oxygen_column(c["O"]))]
+        flags.append("oxygenate: O-number column (alkane surrogate)")
+        d = ce.dbe(c)
+        if c["C"] >= OXY_AROMATIC_MIN_C and d >= OXY_AROMATIC_MIN_DBE - 0.01:
+            candidates.append(("aromatic oxygenate", "Aromatic"))
+            flags.append(f"DBE={d:g}: may be an aromatic oxygenate (phenol, "
+                         "benzaldehyde...): Aromatic column as upper candidate (assumption)")
+        return candidates
+    candidates = [(cls, cls) for cls in ce.reference_classes(c)]
+    if ce.is_terpene_formula(c):
+        flags.append(f"terpene formula: {TERPENE_COLUMN} (alpha-pinene) surrogate (assumption)")
+        candidates.insert(0, ("terpene", TERPENE_COLUMN))
+    return candidates
+
+
+def _formula(c):
+    order = ["C", "H"] + sorted(e for e in c if e not in ("C", "H"))
+    return "".join(f"{e}{c[e] if c[e] != 1 else ''}" for e in order if c.get(e))

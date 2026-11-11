@@ -6,6 +6,14 @@ literature search. Numbers were read from the primary sources where possible.
 Anything marked **[not verified]** comes from memory or a secondary citation
 and must be checked before publication. Section 9 lists the open checks.*
 
+> **Scope decision (November 2026).** The tool deliberately stays with the SOM
+> yield table, which is itself a fit to the chamber data. The upgrades listed
+> below that bring in other parameterizations (Sasidharan, CRACMM,
+> volatility-based estimates) are **not** adopted. They are kept here as
+> background for the limitations in `README.md` §8. Two points were taken up
+> within SOM: aromatic oxygenates now get the Aromatic column as an upper
+> candidate, and every formula gets a central value with a range.
+
 ---
 
 ## 0. What the current table actually contains
