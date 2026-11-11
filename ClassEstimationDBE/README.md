@@ -48,7 +48,7 @@ Each rule rules classes *out*. Whatever is left is returned.
 | class | rule |
 |---|---|
 | nitrogen | any N (if present, nothing else is returned) |
-| terpene | C/H only and exactly C10H16, C15H24 or C20H32 (nothing else is returned) |
+| terpene | C/H only and exactly C10H16, C15H24 or C20H32 (only `aromatic` can also be returned: C15H24 and C20H32 are alkylbenzene formulas too) |
 | aromatic | ≥ 6 C, DBE ≥ 4; a C6 with DBE = 4 is aromatic only |
 | alkene | C/H only, ≥ 2 C, 1 ≤ DBE ≤ 3 |
 | ketone | ≥ 3 C, 1 O, DBE ≥ 1 |
@@ -77,7 +77,8 @@ often share one formula. `reference_classes()` returns all of them:
 | CnH2n−4 | 3 | alkene | Alkenes (trienes), Cycloalkene | no |
 | ≥ 10 C | ≥ 7 | aromatic | PAH | **yes** |
 | ≥ 6 C, not PAH | ≥ 4 | aromatic | Aromatic | **yes** |
-| C10H16, C15H24, C20H32 | 3–5 | terpene | none: terpenes have their own SOA yields | — |
+| C10H16 | 3 | terpene | none: terpenes have their own SOA yields | — |
+| C15H24, C20H32 | 4–5 | terpene, aromatic | Aromatic (the alkylbenzene isomers, e.g. tripropylbenzene); the terpene isomers need their own yields | no |
 | any heteroatom (O, N, S, …) | any | ketone … nitrogen | none: the reference covers hydrocarbons only | — |
 
 Notes on the cut-offs:

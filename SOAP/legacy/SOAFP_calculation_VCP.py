@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-SOAFP calculation - gasoline
+SOAFP calculation - volatile chemical products (VCPs)
 Created on Tue Apr 30 15:13:50 2024
 @author: yi.wu
 
-Assigns a SOA formation potential (SOAFP) to every species of the "gasoline"
+Assigns a SOA formation potential (SOAFP) to every species of the "VCPs"
 speciation profile, using the SOM box-model table (sheet 'avg_py').
 
 Logic
 -----
-1. n_C / n_O are parsed from the column "Species Formula".
+1. n_C / n_O are taken from "No. C" / "No. O"; where missing, parsed from "Species Formula".
 2. family / subfamily are derived from the formula and the SMILES string.
 3. SOAFP is read from the SOM table at the row No_C == n_C:
      - column 'O = 1' ... 'O = 5' (5 = five or more O) for oxygenated species,
@@ -33,10 +33,10 @@ try:
 except NameError:                       # e.g. running cell by cell in Spyder
     DATA_DIR = Path.cwd()
 
-PROFILE_FILE = DATA_DIR / 'Tables_for_SOAFP_calculation.xlsx'
-SOM_FILE = DATA_DIR / 'Copy_of_SOM_boxmodel_for_Shantanu_.xlsx'
-OUTPUT_FILE = DATA_DIR / 'WRF Speciation with SOAFP_gasoline.xlsx'
-PROFILE_SHEET = 'gasoline'
+PROFILE_FILE = DATA_DIR / 'Tables for SOAFP calculation.xlsx'
+SOM_FILE = DATA_DIR / 'Copy of SOM_boxmodel(for Shantanu).xlsx'
+OUTPUT_FILE = DATA_DIR / 'WRF Speciation with SOAFP_VCP.xlsx'
+PROFILE_SHEET = 'VCPs'
 SOM_SHEET = 'avg_py'
 MIN_CARBON = 5                          # species with fewer C get SOAFP = 0
 
@@ -82,18 +82,19 @@ SOM = pd.read_excel(SOM_FILE, sheet_name=SOM_SHEET)
 SOM = SOM.rename(columns={'O=5': 'O = 5'})      # header is 'O=5' in the Excel file
 
 # %% ---------------------------------------------------------- atom numbers
-n_C = np.zeros(nVOC)
-n_H = np.zeros(nVOC)
-n_O = np.zeros(nVOC)
-for n in range(nVOC):
+# 'No. C' / 'No. O' are given in the table; where they are missing ('n/a'),
+# they are taken from the species formula.
+n_C = pd.to_numeric(masslist['No. C'], errors='coerce')
+n_O = pd.to_numeric(masslist['No. O'], errors='coerce')
+for n in masslist.index[n_C.isna() | n_O.isna()]:
     if pd.notna(masslist.loc[n, 'Species Formula']):
         atoms = parse_formula(masslist.loc[n, 'Species Formula'])
-        n_C[n] = atoms.get('C', 0)
-        n_H[n] = atoms.get('H', 0)
-        n_O[n] = atoms.get('O', 0)
-masslist['n_C'] = n_C
-masslist['n_H'] = n_H
-masslist['n_O'] = n_O
+        if pd.isna(n_C[n]):
+            n_C[n] = atoms.get('C', 0)
+        if pd.isna(n_O[n]):
+            n_O[n] = atoms.get('O', 0)
+masslist['n_C'] = n_C.fillna(0)
+masslist['n_O'] = n_O.fillna(0)
 
 # %% ---------------------------------------------------- family and subfamily
 masslist['family'] = 'Other'

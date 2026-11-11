@@ -7,7 +7,8 @@ the formula was obtained.
 Our classes, every rule reading the formula:
 
     nitrogen    any N                                   (exclusive)
-    terpene     C/H only, C10H16, C15H24 or C20H32      (exclusive)
+    terpene     C/H only, C10H16, C15H24 or C20H32      (exclusive, except
+                aromatic for C15H24 / C20H32)
     aromatic    >= 6 C, DBE >= 4; a C6 with DBE = 4 is aromatic only
     alkene      C/H only, >= 2 C, 1 <= DBE <= 3
     ketone      >= 3 C, 1 O, DBE >= 1
@@ -82,6 +83,12 @@ def is_hydrocarbon(c):
     return c.get("C", 0) > 0 and set(c) <= {"C", "H"}
 
 
+def is_terpene_formula(c):
+    """C10H16, C15H24 or C20H32: the (C5H8)n formulas of mono-, sesqui- and diterpenes."""
+    C = c.get("C", 0)
+    return is_hydrocarbon(c) and C in (10, 15, 20) and c.get("H", 0) * 5 == C * 8
+
+
 # --- our classes ----------------------------------------------------------
 
 def possible_classes(c):
@@ -92,7 +99,11 @@ def possible_classes(c):
         return ["other"]                # inorganic: no class applies
     if c.get("N", 0) > 0:
         return ["nitrogen"]
-    if not hetero and C in (10, 15, 20) and c.get("H", 0) * 5 == C * 8:
+    if is_terpene_formula(c):
+        # C15H24 (DBE 4) and C20H32 (DBE 5) are also alkylbenzene formulas,
+        # e.g. tripropylbenzene; C10H16 (DBE 3) cannot be aromatic.
+        if C >= MIN_C["aromatic"] and d >= MIN_DBE["aromatic"]:
+            return ["terpene", "aromatic"]
         return ["terpene"]
     excluded = {"nitrogen", "terpene"}
     if d is not None and abs(d) > 0.5:
@@ -123,8 +134,10 @@ def possible_classes(c):
 def reference_classes(c):
     """
     The SOA-yield reference classes a composition c allows. Only hydrocarbons
-    map onto the reference; anything with a heteroatom, and the terpenes
-    (which have their own yields), returns an empty list.
+    map onto the reference; anything with a heteroatom returns an empty list.
+    Terpene formulas (which have their own yields) return only the
+    non-terpene isomers the DBE allows: none for C10H16, Aromatic for the
+    alkylbenzenes that share the C15H24 / C20H32 formulas.
 
         DBE 0                   n-Alkane, b-Alkane
         DBE 1                   Alkenes, Cycloalkane
@@ -133,9 +146,11 @@ def reference_classes(c):
         DBE >= 7, >= 10 C       PAH
         DBE >= 4, >= 6 C        Aromatic (all other cases)
     """
-    if not is_hydrocarbon(c) or possible_classes(c) == ["terpene"]:
+    if not is_hydrocarbon(c):
         return []
     C, d = c["C"], dbe(c)
+    if is_terpene_formula(c):
+        return ["Aromatic"] if "aromatic" in possible_classes(c) else []
     if abs(d - round(d)) > 0.01 or d < 0:
         return []                       # not a closed-shell molecule
     d = int(round(d))

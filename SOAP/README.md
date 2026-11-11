@@ -1,107 +1,262 @@
-# SOAFP calculation (SOA formation potential)
+# SOAFP: SOA formation potential from structure or formula
 
-Scripts and lookup tables used to assign a **secondary organic aerosol formation potential (SOAFP)** to each species in an emission speciation profile. Each species gets a value taken from a Statistical Oxidation Model (SOM) box-model table, according to its **carbon number** and its **compound class** (or, for oxygenated compounds, its **oxygen number**).
+Assigns each organic species a **secondary organic aerosol formation potential
+(SOAFP)**. Here SOAFP is the **SOA mass yield** (g SOA per g precursor reacted)
+from Statistical Oxidation Model (SOM) box-model runs, looked up by compound
+class and carbon number (or oxygen number).
 
-Author: yi.wu
+There are two routes:
 
----
-
-## 1. Files
-
-| File | Purpose |
-|---|---|
-| `Tables_for_SOAFP_calculation.xlsx` | Input speciation profiles. One sheet per source: `gasoline`, `diesel`, `VCPs`, `cooking`. |
-| `Copy_of_SOM_boxmodel_for_Shantanu_.xlsx` | SOM box-model results. **Only the sheet `avg_py` is read by the scripts.** |
-| `SOAFP_calculation_gasoline.py` | SOAFP for the `gasoline` sheet. |
-| `SOAFP_calculation_diesel.py` | SOAFP for the `diesel` sheet. |
-| `SOAFP_calculation_VCP.py` | SOAFP for the `VCPs` sheet (volatile chemical products). |
-| `SOAFP_calculation_cooking.py` | SOAFP for the `cooking` sheet. |
-
-Requirements: Python 3, `numpy`, `pandas`, `openpyxl`.
-
----
-
-## 2. Method in brief
-
-For every species the scripts do the following:
-
-1. **Count atoms.** Parse the molecular formula (e.g. `C11H10`) to get the number of carbons (`n_C`) and oxygens (`n_O`).
-2. **Classify the species.** Assign a `family` (`CH`, `CHO` or `Other`) from the formula. For `CH` species, assign a `subfamily` from the SMILES string.
-3. **Look up SOAFP** in the SOM table (`avg_py`) at the row where `No_C == n_C`:
-   - **Oxygenated species** use the column `O = 1` … `O = 5` (5 means 5 or more O atoms), based on `n_O`.
-   - **Hydrocarbon species** use the column for their subfamily. This overrides the O-based lookup.
-4. **Cut-off.** Species with `n_C < 5` get `SOAFP = 0`.
-5. **Write** the table, with the new columns `family`, `subfamily`, `n_C`, `n_O`, `SOAFP`, to an Excel file.
-
-### Subfamily rules (SMILES-based, `CH` species only)
-
-| Subfamily | Rule on the `Speciate SMILES` string | SOM column |
+| You know | Route | Result |
 |---|---|---|
-| n-Alkane | no `=`, no `(`, no ring labels `C1`/`C2` | `n-Alkane` |
-| b-Alkane (branched) | no `=`, no ring labels, but contains `(` | `b-Alkane` |
-| Cycloalkane | no `=`, contains `C1`; or compound name contains "cyclohexane" | `Cycloalkane` |
-| Aromatic | contains `=` and `C1`, but not `C2` | `Aromatic` |
-| PAH | contains `=`, `C1` and `C2` | `PAH` |
-| Alkene | contains `=`, no `C1`/`C2` | `Alkenes` |
-| Cycloalkene | contains `=` and `C1` but not `C2`, and `Speciate CRACMM` is `OLT` or `OLI`; or compound name contains "cycloalkene" | `Cycloalkene` |
+| the structure (SMILES) | `soafp_from_structure` | one SOM class → one value, plus its vapor-wall-loss (VWL) range |
+| only the molecular formula (e.g. PTR-ToF-MS, CIMS) | `soafp_range_from_formula` | DBE → every class the formula allows → a min–max range |
 
-Rules are applied in the order above, so later rules overwrite earlier ones. Aromatic and Cycloalkene overlap in their SMILES pattern, so the CRACMM class is what separates them.
-
-### The SOM table (`avg_py`)
-
-- Rows: `No_C` = 5 to 30.
-- Columns: `n-Alkane`, `b-Alkane`, `Cycloalkane`, `Aromatic`, `PAH`, `Alkenes`, `Cycloalkene`, `O = 1`, `O = 2`, `O = 3`, `O = 4`, `O=5`.
-- It is the average of the "No VWL" and "VWL" (vapor wall loss) SOM runs. The header rows of the `avg` sheet document which surrogate represents each column, e.g. benzene / toluene / m-xylene for aromatics, naphthalene for PAH, isoprene for alkenes, α-pinene for cycloalkenes, m-undecane for the oxygenated columns.
-- `avg_py` is the clean, header-free copy of the `avg` sheet made for reading into Python. If you change the SOM numbers, update `avg_py` (the sheet `exp` is an identical copy).
+The module needs **no spreadsheet**: the yield tables are plain CSV in
+`soafp/data/`. The structure route needs [RDKit](https://www.rdkit.org/)
+(`pip install rdkit`). The formula route needs only the standard library and
+`ClassEstimationDBE` from this repository.
 
 ---
 
-## 3. Differences between the scripts
+## 1. Quick start
 
-| | gasoline | diesel | VCP | cooking |
-|---|---|---|---|---|
-| Input sheet | `gasoline` | `diesel` | `VCPs` | `cooking` |
-| Formula column | `Species Formula` | `Species Formula` | `Species Formula` | `Formula` |
-| `n_C` / `n_O` | parsed from formula | parsed from formula | taken from `No. C` / `No. O`; parsed only where they are `n/a` | parsed from formula |
-| Subfamily from SMILES | yes | yes (+ name-based rules for branched alkanes and cycloalkanes) | yes | **no**: only O-count lookup |
-| Special case | none | none | none | `Componud Class == "Terpene"` uses the `Cycloalkene` column |
-| Output file | `WRF Speciation with SOAFP_gasoline.xlsx` | `WRF Speciation with SOAFP_diesel.xlsx` | see note 4 below | `SOAFP_cooking.xlsx` |
+```python
+import sys
+sys.path.insert(0, r"<path to Tool-Chains>/SOAP")
+import soafp
 
----
+r = soafp.soafp_from_structure("CC1=CC=CC=C1")       # toluene
+r["column"], r["soafp_avg"], r["soafp_low"], r["soafp_high"]
+# ('Aromatic', 0.0896, 0.0670, 0.1122)
 
-## 4. How to run
+r = soafp.soafp_range_from_formula("C10H18")
+r["column"], r["soafp_avg_low"], r["soafp_avg_high"]
+# ('Alkenes; Cycloalkene; Cycloalkane', 0.0867, 0.2005)
 
-1. Put the two Excel files in a folder.
-2. In each script, change the **hard-coded paths** to your own. These are the `pd.read_excel(...)` lines (profile file and SOM file) and the `to_excel(...)` line at the bottom. File names in the scripts use spaces, e.g. `Tables for SOAFP calculation.xlsx` and `Copy of SOM_boxmodel(for Shantanu).xlsx`, so either rename the files or edit the scripts to match.
-3. Run the script, e.g. `python SOAFP_calculation_gasoline.py`.
-4. Open the output file and check the `family`, `subfamily` and `SOAFP` columns.
+import pandas as pd
+out = soafp.soafp_table(df, smiles="SMILES", formula="Formula")   # whole table
+```
 
-Scripts are written in Spyder cell style (`#%%`), so they can also be run cell by cell.
+To run the four source profiles (gasoline, diesel, VCP, cooking):
 
----
+```
+python run_profiles.py            # -> results/<profile>_soafp.csv, results/<profile>_input_issues.csv
+python -m pytest tests            # 31 tests
+```
 
-## 5. Known issues and things to check
+## 2. Files
 
-These came up when reading the scripts against the Excel files. Please review them before relying on the numbers.
+| Path | Content |
+|---|---|
+| `soafp/yields.py` | reads the yield tables, `mass_yield(column, n_C)` |
+| `soafp/classify.py` | structure → class (RDKit); formula → candidate classes (DBE). **All assumptions are constants here.** |
+| `soafp/core.py` | `soafp_from_structure`, `soafp_range_from_formula`, `soafp_from_class` |
+| `soafp/table.py` | `soafp_one`, `soafp_table` (pandas) |
+| `soafp/data/som_mass_yield_noVWL.csv`, `..._VWL.csv` | SOM mass yields, C5–C30 × 12 columns, with provenance header |
+| `profiles/*.csv` | the four speciation profiles (exported from `legacy/Tables for SOAFP calculation.xlsx`) |
+| `run_profiles.py` | SOAFP for the four profiles, with the formula-only range alongside |
+| `tests/test_soafp.py` | tests |
+| `legacy/` | the original scripts and workbooks by Yi Wu (they still run, see §8) |
 
-1. **Column name `O=5`.** In `avg_py` the last column is named `O=5` (no spaces), but all scripts look up `'O = 5'`. Any species with 5 or more O atoms and `n_C > 4` will raise a `KeyError`. Fix by renaming the column in the Excel file or the string in the scripts.
-2. **VCP script is not directly runnable as written.**
-   - It reads the columns `n_C` / `n_O`, but the `VCPs` sheet has `No. C` / `No. O`.
-   - After the `'n/a'` entries in `No. C` are filled in, the mask for filling `No. O` is evaluated again and no longer matches, so `No. O` stays `'n/a'`.
-   - The output path points to the **gasoline** file name and would overwrite that result.
-3. **Diesel script: `'ch'` vs `'CH'`.** The conditions for branched alkane (SMILES part), cycloalkane (SMILES part) use `family == 'ch'` (lower case), which never matches. For diesel, branched alkanes and cycloalkanes are therefore only identified through the `Compound` name ("Branched Alkane", "cyclohexane", "cycloalkane").
-4. **Cooking script.** The `family` column is derived with a regex applied to the `SMILES` column, whereas the other scripts use the formula column. It is not used for the lookup. Species that have no oxygen and are not terpenes get `SOAFP = 0`. The column header `Componud Class` is misspelled in the Excel file, and the script matches that spelling.
-5. **Species with 0 oxygen and no hydrocarbon subfamily** (e.g. halogenated or N-containing species, family `Other`) get `SOAFP = 0`, because no lookup rule applies to them.
-6. **Carbon range.** The SOM table covers C5 to C30. Species with `n_C > 30` would fail the lookup (`IndexError`). Current inputs go up to C26 (diesel) and C20 (VCPs).
-7. **Units / meaning of SOAFP.** *(Add here the definition and units of the SOM values, e.g. yield per mass or per mole of VOC reacted, and the OH exposure / conditions used in the box model.)*
+## 3. The yield tables
 
----
+Two SOM box-model runs, both from the workbook `Copy of SOM_boxmodel(for Shantanu).xlsx`:
 
-## 6. Output columns added
+| Case | SOM parameters fit to chamber data… | Use |
+|---|---|---|
+| `noVWL` | without vapor-wall-loss correction | lower bound |
+| `VWL` | with vapor-wall-loss correction | upper bound |
+| `avg` | mean of the two (= sheets `avg` / `avg_py`, checked to be identical) | central value, as in the original scripts |
+
+Columns and surrogate precursors, as in the workbook headers:
+
+| Column | Surrogate |
+|---|---|
+| `n-Alkane` | n-dodecane |
+| `b-Alkane`, `Cycloalkane` | not stated in the workbook. Probably the C12 alkane fits of Cappa et al. (2013): 2-methylundecane, hexylcyclohexane. **To confirm.** |
+| `Aromatic` | benzene (n_C ≤ 6), toluene (7), m-xylene (≥ 8). The column therefore jumps between C6, C7 and C8. |
+| `PAH` | naphthalene |
+| `Alkenes` | isoprene |
+| `Cycloalkene` | α-pinene |
+| `O1` … `O5` | alkane surrogate with 1…5 (≥ 5) O atoms. Labelled m-undecane in `no VWL` and dodecane in `VWL`. Constant above C20, so extrapolated. |
+
+**Provenance.** The workbook is labelled "SOM II (Updated 11/23/2016)" and
+contains a block "Table S7b. Zhao (n-alkanes, SOA mass yield)". The SOM
+framework is Cappa & Wilson (2012) and Cappa et al. (2013). The VWL-corrected
+fits follow Zhang et al. (2014) and Cappa et al. (2016, Table S1). The same
+family of yields is used by McDonald et al. (2018, Table S12) for VCPs. See
+`LITERATURE_REVIEW.md`.
+
+**Not documented in the workbook:**
+- the OH exposure, OA loading, NOx regime and temperature of the runs. A margin
+  note reads "correct for OH exposure at the time considered";
+- which wall-loss rate the `VWL` case uses. Cappa et al. (2016) give 1×10⁻⁴
+  and 2.5×10⁻⁴ s⁻¹.
+
+## 4. Method
+
+### 4.1 Structure route (SMILES → one class)
+
+The SMILES is parsed with RDKit, so aromatic (`c1ccccc1`), Kekulé and stereo
+SMILES all work. For C/H-only species the rules are applied in this order:
+
+| Rule | Column |
+|---|---|
+| ≥ 2 aromatic rings | `PAH` (naphthalenes, biphenyl) |
+| 1 aromatic ring | `Aromatic`. This includes indane, indene, tetralin and styrene. |
+| terpene formula C10H16 / C15H24 / C20H32, not aromatic | `Cycloalkene` (α-pinene). This includes limonene and acyclic terpenes. |
+| C=C or C≡C, with a ring | `Cycloalkene` |
+| C=C or C≡C, no ring | `Alkenes`. Alkynes are flagged. |
+| saturated, with a ring | `Cycloalkane` |
+| saturated, a carbon bonded to ≥ 3 carbons | `b-Alkane` |
+| otherwise | `n-Alkane` |
+
+Species with oxygen use the `O<n_O>` column at their carbon number,
+independent of the carbon skeleton. Species with N, S, P, Si or halogens follow
+`HETEROATOM_POLICY` (see §5).
+
+A formula given together with the SMILES is only checked against it: a
+mismatch is flagged and the structure is used. Given `n_C` / `n_O` values
+override the structure (for lumped species, see §7).
+
+### 4.2 Formula route (formula → candidate classes → range)
+
+`ClassEstimationDBE` computes the DBE and lists every class the formula
+allows:
+
+| C/H formula | DBE | Candidates |
+|---|---|---|
+| CₙH₂ₙ₊₂ | 0 | n-Alkane, b-Alkane |
+| CₙH₂ₙ | 1 | Alkenes, Cycloalkane |
+| CₙH₂ₙ₋₂ | 2 | Alkenes, Cycloalkene, Cycloalkane (bicyclic) |
+| CₙH₂ₙ₋₄ | 3 | Alkenes, Cycloalkene |
+| ≥ 6 C | ≥ 4 | Aromatic; PAH if DBE ≥ 7 and ≥ 10 C |
+| C10H16 | 3 | Cycloalkene (terpene) |
+| C15H24, C20H32 | 4–5 | Cycloalkene (terpene), Aromatic (alkylbenzenes) |
+| with O | any | `O<n_O>`: a single value, because the O-number columns ignore structure |
+
+The range is reported two ways:
+- `soafp_avg_low` – `soafp_avg_high`: over the candidates, using the `avg` table;
+- `soafp_low` – `soafp_high`: over the candidates **and** both VWL cases.
+
+The candidates are never averaged, because the formula carries no information
+on which one applies.
+
+## 5. Assumptions (all in `soafp/classify.py` and `soafp/yields.py`)
+
+| # | Assumption | Default | Why / alternative |
+|---|---|---|---|
+| A1 | SOAFP = SOM mass yield at the (undocumented) box-model conditions | — | not reactivity- or exposure-weighted; see LITERATURE_REVIEW.md |
+| A2 | central value = mean of no-VWL and VWL | `avg` | the two cases are reported as the bounds |
+| A3 | n_C < 5 → 0 | | the SOM tables start at C5 |
+| A4 | n_C > 30 → C30 value | | yields plateau above about C23. The legacy scripts gave 0. |
+| A5 | oxygenates: `O<min(n_O,5)>` column, regardless of structure | | aromatic or alkene oxygenates (phenols, aldehydes…) get the alkane-based value |
+| A6 | terpenes → `Cycloalkene` (α-pinene) | `TERPENE_COLUMN` | applies to sesquiterpenes too, scaled only by carbon number |
+| A7 | species with N, S, P, Si or halogens: with O they are treated as oxygenates (e.g. siloxanes → `O5`); without O they get 0 | `HETEROATOM_POLICY = "oxygen_column"` | `"zero"` gives them all 0 |
+| A8 | one aromatic ring = `Aromatic`; only ≥ 2 aromatic rings = `PAH` | | the legacy SMILES rules put indane, indene and tetralin in PAH, which is about ×2 higher at C9–C10 |
+| A9 | alkynes → as alkenes | | flagged; mostly < C5 anyway |
+| A10 | formula route: DBE ≥ 4 with ≥ 6 C is aromatic | `ce.PAH_MIN_DBE`, `PAH_MIN_C` | non-aromatic polyenes or polycyclics at DBE ≥ 4 are not considered |
+
+Every assumption that applies to a species is written to its `soafp_flags`.
+
+## 6. Output columns
 
 | Column | Meaning |
 |---|---|
-| `family` | `CH`, `CHO` or `Other` |
-| `subfamily` | `n-Alkane`, `b-Alkane`, `Cycloalkane`, `Aromatic`, `PAH`, `Alkene`, `Cycloalkene` or `Other` |
-| `n_C`, `n_O` (`n_H` for gasoline/diesel) | Atom counts from the formula |
-| `SOAFP` | Value from the SOM table (0 if `n_C < 5` or no rule applies) |
+| `soafp_method` | `structure`, `class` (set by hand), `formula`, or `none` |
+| `soafp_column` | SOM column(s) used; `; `-separated when there are several candidates |
+| `n_C`, `n_O`, `dbe` | composition used for the lookup |
+| `soafp_noVWL`, `soafp_VWL`, `soafp_avg` | single-class values (empty for ambiguous formulas) |
+| `soafp_avg_low`, `soafp_avg_high` | range of `soafp_avg` over the candidates |
+| `soafp_low`, `soafp_high` | range over the candidates and both VWL cases |
+| `soafp_flags` | every assumption or problem, `; `-separated |
+| `formula_*` (run_profiles only) | the same, computed from the formula alone |
+
+## 7. The four profiles (`run_profiles.py`)
+
+**Given carbon and oxygen numbers.** The diesel and VCP tables carry per-row
+carbon and oxygen numbers (`n_C`/`n_O`, `No. C`/`No. O`). They are handled
+differently:
+
+| Profile | Policy | Why |
+|---|---|---|
+| diesel | **override** the structure | the mismatches are lumped species whose SMILES is only a representative: "Aromatic" C15…C23 all carry the SMILES of a C14 alkylbenzene, and "UCM" has `n_C` = 26 with the SMILES of dodecane |
+| VCP | **check only**, structure used | the mismatches are mostly wrong numbers for named compounds: 3-methylpentane is given C4, benzaldehyde 0 O, dipropylene glycol methyl ether acetate C9 |
+
+The legacy VCP script used `No. C`/`No. O` and the legacy diesel script used
+the formula, so both policies differ from legacy for some rows. Compound names
+matching "branched alkane", "cycloalkane" or "cycloalkene" set the class by
+hand (`NAME_HINTS`), as the legacy scripts did. Every such row is listed in
+`results/<profile>_input_issues.csv` for review.
+
+**Weighted mean SOAFP, Σ(wt % × SOAFP)/Σ wt %:**
+
+| Profile | Species changed | Rows to review | Legacy | This module (avg) | VWL range | Formula only, avg | Formula only, incl. VWL |
+|---|---|---|---|---|---|---|---|
+| gasoline | 5/137 | 2 | 0.0284 | 0.0283 | 0.0220–0.0345 | 0.0280–0.0309 | 0.0190–0.0414 |
+| diesel | 20/217 | 98 | 0.2270 | **0.3592** | 0.3163–0.4020 | 0.2089–0.2604 | 0.1640–0.3462 |
+| VCP | 35/512 | 31 | 0.0379 | **0.0332** | 0.0222–0.0442 | 0.0310–0.0386 | 0.0196–0.0550 |
+| cooking | 1/46 | 11 | 0.0029 | 0.0029 | 0.0014–0.0044 | 0.0029 | 0.0014–0.0044 |
+
+**Two rows dominate the differences:**
+- **diesel "UCM"** (11.9 wt %): the legacy script parsed the placeholder
+  formula C12H26 and got 0.069. The table's `n_C` = 26 gives 1.05, which
+  explains almost all of the diesel increase. *Please confirm that 26 is meant.*
+- **VCP "Witch hazel"** (0.54 wt %): `No. C` = 20 and `No. O` = 14 in the
+  table, but the SMILES and formula are decane. Legacy took C20 (0.66); this
+  module takes decane (0.033). Neither is a good representation of a plant
+  extract.
+
+The other changes across the profiles:
+- indane, indene and tetralin → Aromatic (A8);
+- terpenes → Cycloalkene (limonene, pinene, pine oil and turpentine were
+  Aromatic or PAH before);
+- the diesel "Aromatic" and "Polycyclic Aromatic" lumps now use their given
+  carbon numbers;
+- some rows where the SMILES, the formula or the given numbers disagree.
+
+The formula-only range does not reach the diesel value, because the lumps'
+placeholder formulas carry the wrong carbon numbers.
+
+**Input rows to check** (all are in `results/*_input_issues.csv`):
+- gasoline "napthalene": formula C10H8, but the SMILES is methylnaphthalene,
+  which is used;
+- cooking undecanal/undecenal: the formulas and SMILES are swapped or wrong;
+- cooking: eight species have no SMILES (`---`), so the formula range is used;
+- VCP: Witch hazel (above); Texanol `No. O` is 4 for a molecule with 3 O;
+  "C9 cycloalkanes" and "Cis-bicyclo[4.3.0]nonane" carry the SMILES of other
+  compounds; siloxane lumps have inconsistent `No. C`.
+
+## 8. Legacy scripts
+
+`legacy/` holds the original per-source scripts (`SOAFP_calculation_*.py`) and
+both workbooks unchanged. The only edit is to the file names in the scripts,
+which now match the uploaded workbooks. Run them from that folder; they write
+`WRF Speciation with SOAFP_*.xlsx` / `SOAFP_cooking.xlsx` next to themselves
+(ignored by git). Compared with this module, they:
+- classify from SMILES with string matching, so aromatic or stereo SMILES fail
+  and indane etc. come out as PAH;
+- distinguish cycloalkenes only through the `Speciate CRACMM` column;
+- in the cooking script, use no structure at all (only the O number and the
+  terpene flag);
+- give 0 above C30.
+
+## 9. Open items
+
+1. Document the box-model conditions (OH exposure, OA loading, NOx, T) and the
+   VWL rate. Confirm the b-Alkane and Cycloalkane surrogates.
+2. Confirm the diesel UCM carbon number and fix the input rows listed in §7.
+   Better still, give lumped species an explicit class and carbon number
+   instead of a placeholder SMILES.
+3. Possible method upgrades are ranked in `LITERATURE_REVIEW.md`.
+
+## References
+
+- Cappa, C. D. and Wilson, K. R.: Multi-generation gas-phase oxidation, equilibrium partitioning, and the formation and evolution of secondary organic aerosol, Atmos. Chem. Phys., 12, 9505–9528, 2012.
+- Cappa, C. D., et al.: Application of the Statistical Oxidation Model (SOM) to SOA formation from photooxidation of C12 alkanes, Atmos. Chem. Phys., 13, 1591–1606, doi:10.5194/acp-13-1591-2013, 2013.
+- Cappa, C. D., et al.: Simulating secondary organic aerosol in a regional air quality model using the statistical oxidation model – Part 2: Assessing the influence of vapor wall losses, Atmos. Chem. Phys., 16, 3041–3059, doi:10.5194/acp-16-3041-2016, 2016 (Table S1: SOM parameters).
+- Zhang, X., et al.: Influence of vapor wall loss in laboratory chambers on yields of secondary organic aerosol, PNAS, 111, 5802–5807, doi:10.1073/pnas.1404727111, 2014.
+- McDonald, B. C., et al.: Volatile chemical products emerging as largest petrochemical source of urban organic emissions, Science, 359, 760–764, doi:10.1126/science.aaq0524, 2018 (Table S12: SOA yields).
+
+Original scripts: Yi Wu. Module: Tool-Chains.

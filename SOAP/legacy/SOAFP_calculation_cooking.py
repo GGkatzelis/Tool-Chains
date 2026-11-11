@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-SOAFP calculation - volatile chemical products (VCPs)
-Created on Tue Apr 30 15:13:50 2024
+SOAFP calculation - cooking
+Created on Tue Jun 11 11:43:13 2024
 @author: yi.wu
 
-Assigns a SOA formation potential (SOAFP) to every species of the "VCPs"
+Assigns a SOA formation potential (SOAFP) to every species of the "cooking"
 speciation profile, using the SOM box-model table (sheet 'avg_py').
 
 Logic
 -----
-1. n_C / n_O are taken from "No. C" / "No. O"; where missing, parsed from "Species Formula".
+1. n_C / n_O are parsed from the column "Formula".
 2. family / subfamily are derived from the formula and the SMILES string.
 3. SOAFP is read from the SOM table at the row No_C == n_C:
      - column 'O = 1' ... 'O = 5' (5 = five or more O) for oxygenated species,
-     - column of the subfamily (n-Alkane, b-Alkane, ...) (ignored for n_C < 5).
+     - column of the subfamily (n-Alkane, b-Alkane, ...) (only the terpene, via "Componud Class").
    The subfamily lookup overrides the O-based lookup.
 4. Species with n_C < 5 get SOAFP = 0.
 
@@ -33,10 +33,10 @@ try:
 except NameError:                       # e.g. running cell by cell in Spyder
     DATA_DIR = Path.cwd()
 
-PROFILE_FILE = DATA_DIR / 'Tables_for_SOAFP_calculation.xlsx'
-SOM_FILE = DATA_DIR / 'Copy_of_SOM_boxmodel_for_Shantanu_.xlsx'
-OUTPUT_FILE = DATA_DIR / 'WRF Speciation with SOAFP_VCP.xlsx'
-PROFILE_SHEET = 'VCPs'
+PROFILE_FILE = DATA_DIR / 'Tables for SOAFP calculation.xlsx'
+SOM_FILE = DATA_DIR / 'Copy of SOM_boxmodel(for Shantanu).xlsx'
+OUTPUT_FILE = DATA_DIR / 'SOAFP_cooking.xlsx'
+PROFILE_SHEET = 'cooking'
 SOM_SHEET = 'avg_py'
 MIN_CARBON = 5                          # species with fewer C get SOAFP = 0
 
@@ -82,51 +82,28 @@ SOM = pd.read_excel(SOM_FILE, sheet_name=SOM_SHEET)
 SOM = SOM.rename(columns={'O=5': 'O = 5'})      # header is 'O=5' in the Excel file
 
 # %% ---------------------------------------------------------- atom numbers
-# 'No. C' / 'No. O' are given in the table; where they are missing ('n/a'),
-# they are taken from the species formula.
-n_C = pd.to_numeric(masslist['No. C'], errors='coerce')
-n_O = pd.to_numeric(masslist['No. O'], errors='coerce')
-for n in masslist.index[n_C.isna() | n_O.isna()]:
-    if pd.notna(masslist.loc[n, 'Species Formula']):
-        atoms = parse_formula(masslist.loc[n, 'Species Formula'])
-        if pd.isna(n_C[n]):
-            n_C[n] = atoms.get('C', 0)
-        if pd.isna(n_O[n]):
-            n_O[n] = atoms.get('O', 0)
-masslist['n_C'] = n_C.fillna(0)
-masslist['n_O'] = n_O.fillna(0)
+n_C = np.zeros(nVOC)
+n_H = np.zeros(nVOC)
+n_O = np.zeros(nVOC)
+for n in range(nVOC):
+    if pd.notna(masslist.loc[n, 'Formula']):
+        atoms = parse_formula(masslist.loc[n, 'Formula'])
+        n_C[n] = atoms.get('C', 0)
+        n_H[n] = atoms.get('H', 0)
+        n_O[n] = atoms.get('O', 0)
+masslist['n_C'] = n_C
+masslist['n_H'] = n_H
+masslist['n_O'] = n_O
 
 # %% ---------------------------------------------------- family and subfamily
 masslist['family'] = 'Other'
-masslist.loc[contains(masslist['Species Formula'], r'^C[0-9]*H[0-9]*$'), 'family'] = 'CH'
-masslist.loc[contains(masslist['Species Formula'], r'^C[0-9]*H[0-9]*O[0-9]*$'), 'family'] = 'CHO'
+masslist.loc[contains(masslist['Formula'], r'^C[0-9]*H[0-9]*$'), 'family'] = 'CH'
+masslist.loc[contains(masslist['Formula'], r'^C[0-9]*H[0-9]*O[0-9]*$'), 'family'] = 'CHO'
 
-smiles = masslist['Speciate SMILES']
-name = masslist['Compound']
-is_CH = masslist['family'] == 'CH'
-has_double = contains(smiles, '=')
-has_ring1 = contains(smiles, 'C1')
-has_ring2 = contains(smiles, 'C2')
-has_branch = contains(smiles, r'\(')
-
+# Only the terpene is treated as a hydrocarbon subfamily (Cycloalkene column);
+# all other species are looked up by their number of O atoms.
 masslist['subfamily'] = 'Other'
-# n-alkane: no double bond, no branch, no ring
-masslist.loc[is_CH & ~has_double & ~has_branch & ~has_ring1 & ~has_ring2, 'subfamily'] = 'n-Alkane'
-# branched alkane
-masslist.loc[(is_CH & ~has_double & ~has_ring1 & ~has_ring2 & has_branch)
-             | contains(name, 'Branched Alkane', case=False), 'subfamily'] = 'b-Alkane'
-# cycloalkane
-masslist.loc[(is_CH & ~has_double & has_ring1)
-             | contains(name, 'cyclohexane|cycloalkane', case=False), 'subfamily'] = 'Cycloalkane'
-# aromatic (one ring) and PAH (two rings)
-masslist.loc[is_CH & has_double & has_ring1 & ~has_ring2, 'subfamily'] = 'Aromatic'
-masslist.loc[is_CH & has_double & has_ring1 & has_ring2, 'subfamily'] = 'PAH'
-# alkene
-masslist.loc[is_CH & has_double & ~has_ring1 & ~has_ring2, 'subfamily'] = 'Alkene'
-# cycloalkene: one ring + double bond and CRACMM class OLT/OLI (or named cycloalkene)
-is_olefin_cracmm = masslist['Speciate CRACMM'].isin(['OLT', 'OLI'])
-masslist.loc[(is_CH & has_double & has_ring1 & ~has_ring2 & is_olefin_cracmm)
-             | (is_CH & contains(name, 'cycloalkene', case=False)), 'subfamily'] = 'Cycloalkene'
+masslist.loc[masslist['Componud Class'] == 'Terpene', 'subfamily'] = 'Cycloalkene'
 
 # %% ------------------------------------------------ SOA formation potential
 SOAFP = np.zeros(nVOC)

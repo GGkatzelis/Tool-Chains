@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-SOAFP calculation - diesel
+SOAFP calculation - gasoline
 Created on Tue Apr 30 15:13:50 2024
 @author: yi.wu
 
-Assigns a SOA formation potential (SOAFP) to every species of the "diesel"
+Assigns a SOA formation potential (SOAFP) to every species of the "gasoline"
 speciation profile, using the SOM box-model table (sheet 'avg_py').
 
 Logic
@@ -33,10 +33,10 @@ try:
 except NameError:                       # e.g. running cell by cell in Spyder
     DATA_DIR = Path.cwd()
 
-PROFILE_FILE = DATA_DIR / 'Tables_for_SOAFP_calculation.xlsx'
-SOM_FILE = DATA_DIR / 'Copy_of_SOM_boxmodel_for_Shantanu_.xlsx'
-OUTPUT_FILE = DATA_DIR / 'WRF Speciation with SOAFP_diesel.xlsx'
-PROFILE_SHEET = 'diesel'
+PROFILE_FILE = DATA_DIR / 'Tables for SOAFP calculation.xlsx'
+SOM_FILE = DATA_DIR / 'Copy of SOM_boxmodel(for Shantanu).xlsx'
+OUTPUT_FILE = DATA_DIR / 'WRF Speciation with SOAFP_gasoline.xlsx'
+PROFILE_SHEET = 'gasoline'
 SOM_SHEET = 'avg_py'
 MIN_CARBON = 5                          # species with fewer C get SOAFP = 0
 

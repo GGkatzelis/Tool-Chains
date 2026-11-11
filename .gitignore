@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# generated SOAFP outputs
+SOAP/results/
+SOAP/legacy/WRF Speciation with SOAFP_*.xlsx
+SOAP/legacy/SOAFP_cooking.xlsx
+.pytest_cache/
