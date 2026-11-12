@@ -102,6 +102,19 @@ def hydrocarbon_class(mol):
     return ("b-Alkane" if branched else "n-Alkane"), flags
 
 
+def benzene_rings(smiles):
+    """Number of benzene-type rings (6 aromatic C) in a SMILES; furans,
+    pyridines etc. do not count. 0 if the SMILES does not parse."""
+    Chem, _ = _rdkit()
+    mol = Chem.MolFromSmiles(str(smiles).strip())
+    if mol is None:
+        return 0
+    return sum(len(ring) == 6 and all(mol.GetAtomWithIdx(i).GetIsAromatic()
+                                      and mol.GetAtomWithIdx(i).GetSymbol() == "C"
+                                      for i in ring)
+               for ring in mol.GetRingInfo().AtomRings())
+
+
 def _mol_counts(mol):
     _, rdMolDescriptors = _rdkit()
     return ce.counts(rdMolDescriptors.CalcMolFormula(mol).rstrip("+-"))
@@ -131,7 +144,7 @@ def column_from_smiles(smiles):
 #
 # Assumptions of the formula route (see SOAP/README.md, section 5):
 OXY_AROMATIC_MIN_C = 6     # CHO formulas with >= 6 C and DBE >= 4 may be
-OXY_AROMATIC_MIN_DBE = 4   # aromatic oxygenates: Aromatic column as an upper candidate
+OXY_AROMATIC_MIN_DBE = 4   # aromatic (hetero)compounds: Aromatic column as an upper candidate
 HALOGENS = ("F", "Cl", "Br", "I")
 GROUP_ATOMS = ("N", "S", "P")   # each counted as one O-bearing functional group
 NO_SOA = None                   # candidate column meaning "SOAFP 0"
@@ -177,14 +190,17 @@ def _formula_candidates(c, flags):
         tag = "+".join(e for e in GROUP_ATOMS + ("Si",) if c.get(e, 0))
         flags.append(f"contains {tag}: range from 0 to an oxygenate with {n_eff} "
                      "O-equivalent groups (N, S, P count as one group each) (assumption)")
-        return [("no SOA", NO_SOA), (f"O{min(n_eff, 5)}-equivalent", oxygen_column(n_eff))]
+        candidates = [("no SOA", NO_SOA), (f"O{min(n_eff, 5)}-equivalent", oxygen_column(n_eff))]
+        if _may_be_aromatic(c):
+            candidates.append(("aromatic analogue", "Aromatic"))
+            flags.append("DBE >= 4: may be aromatic, Aromatic column as upper candidate (assumption)")
+        return candidates
     if c.get("O", 0):
         candidates = [("aliphatic oxygenate", oxygen_column(c["O"]))]
         flags.append("oxygenate: O-number column (alkane surrogate)")
-        d = ce.dbe(c)
-        if c["C"] >= OXY_AROMATIC_MIN_C and d >= OXY_AROMATIC_MIN_DBE - 0.01:
+        if _may_be_aromatic(c):
             candidates.append(("aromatic oxygenate", "Aromatic"))
-            flags.append(f"DBE={d:g}: may be an aromatic oxygenate (phenol, "
+            flags.append(f"DBE={ce.dbe(c):g}: may be an aromatic oxygenate (phenol, "
                          "benzaldehyde...): Aromatic column as upper candidate (assumption)")
         return candidates
     candidates = [(cls, cls) for cls in ce.reference_classes(c)]
@@ -192,6 +208,11 @@ def _formula_candidates(c, flags):
         flags.append(f"terpene formula: {TERPENE_COLUMN} (alpha-pinene) surrogate (assumption)")
         candidates.insert(0, ("terpene", TERPENE_COLUMN))
     return candidates
+
+
+def _may_be_aromatic(c):
+    d = ce.dbe(c)
+    return c["C"] >= OXY_AROMATIC_MIN_C and d is not None and d >= OXY_AROMATIC_MIN_DBE - 0.01
 
 
 def _formula(c):

@@ -190,3 +190,21 @@ def test_soafp_table_routes():
     assert list(out["soafp_method"]) == ["structure", "formula", "none", "class"]
     assert out.loc[3, "n_C"] == 20
     assert "cannot parse" in out.loc[1, "soafp_flags"]
+
+
+# --- calc_soafp script -----------------------------------------------------
+
+def test_calc_soafp_input_detection():
+    import calc_soafp as cs
+    assert cs.resolve("C10H16")[0] == "formula"
+    assert cs.resolve("CCCCCC")[0] == "smiles"          # no H: not read as a formula
+    assert cs.resolve("CO")[0] == "smiles"              # methanol
+    assert cs.resolve("CS2", kind="formula")[0] == "formula"
+    assert cs.resolve("C10H17+")[0] == "unknown"        # ion formula
+    assert cs.resolve("toluene")[0] == "unknown"        # names need online=True
+    r = cs.soafp_of("O=Cc1ccccc1")                      # benzaldehyde: same as its formula
+    assert r["column"] == "O1; Aromatic"
+    assert r["soafp_central"] == pytest.approx(
+        soafp.soafp_range_from_formula("C7H6O")["soafp_central"])
+    out = cs.soafp_of_list(["C10H16", "nonsense!"])
+    assert out["soafp_central"].notna().tolist() == [True, False]

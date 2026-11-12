@@ -82,7 +82,8 @@ def _weight(weights, label, column):
 
 def soafp_from_structure(smiles, formula=None, n_C=None, n_O=None):
     """
-    SOAFP from a SMILES string: exactly one SOM column. If a formula is given
+    SOAFP from a SMILES string: one SOM column (two for aromatic oxygenates:
+    O-number column and Aromatic, as on the formula route). If a formula is given
     too, it is only checked against the structure (a mismatch is flagged and
     the structure wins).
 
@@ -99,6 +100,12 @@ def soafp_from_structure(smiles, formula=None, n_C=None, n_O=None):
                          "structure used")
     c, column = _override(c, column, n_C, n_O, flags)
     candidates = [(column, column)] if column else []
+    if column in OXYGEN_COLUMNS and classify.benzene_rings(smiles):
+        # same rule as the formula route (A6): the alkane-based O-column is a
+        # lower bound for aromatic oxygenates, the Aromatic column an upper one
+        candidates.append(("aromatic oxygenate", "Aromatic"))
+        flags.append("aromatic oxygenate: range from the O-number column to the "
+                     "Aromatic column (assumption)")
     return _result("structure", candidates, c, ce.dbe(c), flags)
 
 
